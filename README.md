@@ -11,7 +11,7 @@ I created it because I wanted a very, very simple way to post entries to a blog 
 
 You can see a sample here: [read the initial blog post](https://web.archive.org/web/20130520204024/http://mmb.pcb.ub.es/~carlesfe/blog/creating-a-simple-blog-system-with-a-500-line-bash-script.html). That page was 100% generated using bashblog, no additional tweaking.
 
-[![demo]()
+[![demo](https://github.com/Passionlinux/sebashblog/blob/master/Capture%20d'%C3%A9cran_20261009_011643.png)
 
 Check out [other bashblog users](https://www.google.com/search?q=%22Generated+with+bashblog,+a+single+bash+script+to+easily+create+blogs+like+this+one%22)
 
