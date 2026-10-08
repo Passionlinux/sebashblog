@@ -5,7 +5,7 @@ A single Bash script to create blogs.
 
 I created it because I wanted a very, very simple way to post entries to a blog by using a public folder on my server, without any special requirements and dependencies. Works on GNU/Linux, OSX and BSD.
 
-*How simple? Just type `./bb.sh post` and start writing your blogpost.*
+*How simple? Just type `./bbnew.sh post` and start writing your blogpost.*
 
 [![asciinema](https://asciinema.org/a/4nr44km9ipow4s7u2w2eabeik.png)](https://asciinema.org/a/4nr44km9ipow4s7u2w2eabeik)
 
