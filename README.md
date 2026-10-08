@@ -21,7 +21,7 @@ Usage
 
 Download the code and copy bb.sh into a public folder (for example, `$HOME/public_html/blog`) and run
 
-    ./bb.sh
+    ./bbnew.sh
 
 This will show the available commands. If the file is not executable, type `chmod +x bb.sh` and retry.
 
@@ -30,11 +30,11 @@ Read the Configuration section below for more information**
 
 To create your first post, just run:
 
-    ./bb.sh post
+    ./bbnew.sh post
     
 It will try to use Markdown, if installed. To force HTML:
 
-    ./bb.sh post -html
+    ./bbnew.sh post -html
     
 The script will handle the rest.
 
@@ -72,7 +72,7 @@ want to change the default titles, author names, etc, to match your own.
 
 There are two ways to configure the blog strings:
 
-- Edit `bb.sh` and modify the variables in the `global_variables()` function
+- Edit `bbnew.sh` and modify the variables in the `global_variables()` function
 - Create a `.config` file with your configuration values -- useful if you don't want to touch the script and be able to update it regularly with git
 
 The software will load the values in the script first, then overwrite them with the values in the `.config` file.
