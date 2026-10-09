@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 240" role="img" aria-labelledby="title description">
+  <title id="title">SebashBlog</title>
+  <desc id="description">Logo SebashBlog : une fenêtre de terminal avec une invite Bash et le nom du blog.</desc>
+
+  <g transform="translate(16 16)">
+    <rect width="208" height="208" rx="42" fill="#17212b"/>
+    <path d="M49 67h110a12 12 0 0 1 12 12v72a12 12 0 0 1-12 12H49a12 12 0 0 1-12-12V79a12 12 0 0 1 12-12Z" fill="none" stroke="#f4f1e9" stroke-width="8"/>
+    <circle cx="59" cy="88" r="4" fill="#e9903e"/>
+    <circle cx="76" cy="88" r="4" fill="#e9903e" opacity=".72"/>
+    <path d="m65 111 22 17-22 17M98 145h29" fill="none" stroke="#f4f1e9" stroke-linecap="round" stroke-linejoin="round" stroke-width="9"/>
+    <path d="M135 145h15" fill="none" stroke="#e9903e" stroke-linecap="round" stroke-width="9"/>
+  </g>
+
+  <text x="270" y="151" fill="#17212b" font-family="Ubuntu, Inter, Arial, sans-serif" font-size="94" font-weight="700" letter-spacing="-5">Sebash<tspan fill="#d8792d">Blog</tspan></text>
+  <path d="M276 184h104" stroke="#d8792d" stroke-width="8" stroke-linecap="round"/>
+</svg>
