@@ -1,5 +1,7 @@
 # bbnew.sh
 
+![Logo de Sebashblog](sebashblog-logo.svg)
+
 `bbnew.sh` est un générateur de blog statique écrit en Bash, adapté à partir de
 [BashBlog](bashblog/README.md) et de son script `bashblog/bb.sh`. Il conserve les
 commandes principales de BashBlog tout en ajoutant des fonctions et une
