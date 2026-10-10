@@ -21,7 +21,7 @@ global_variables() {
     global_software_version="2.10"
 
     # Blog title
-    global_title="Seb's blog"
+    global_title="SebashBlog"
     # The typical subtitle for each blog
     global_description="PassionGNU/Linux, la passion du libre..."
     # Image displayed at the top of every generated page (relative to the blog).
@@ -155,6 +155,7 @@ global_variables() {
     date_format="%d %B %Y"
     date_locale="fr_FR.UTF-8"
     date_inpost="bashblog_timestamp"
+    date_created_inpost="bashblog_created_timestamp"
     # Don't change these dates
     date_format_full="%a, %d %b %Y %H:%M:%S %z"
     date_format_timestamp="%Y%m%d%H%M.%S"
@@ -231,9 +232,17 @@ markdown() {
 # plus arguments (for example: "code --wait"). No shell evaluation is needed.
 run_editor() {
     local -a editor_command=()
-    read -r -a editor_command <<< "$EDITOR"
+    # Prefer the user's explicitly selected visual/terminal editor. When
+    # neither is set, use the system's `editor` alternative (for example
+    # managed by update-alternatives on Debian/Ubuntu).
+    local editor_setting=${VISUAL:-${EDITOR:-editor}}
+    read -r -a editor_command <<< "$editor_setting"
     if ((${#editor_command[@]} == 0)); then
-        echo "La variable EDITOR est vide ; indique la commande de ton éditeur." >&2
+        echo "Aucun éditeur n’est configuré ; définis VISUAL ou EDITOR." >&2
+        return 1
+    fi
+    if ! command -v -- "${editor_command[0]}" >/dev/null 2>&1; then
+        echo "Éditeur introuvable : ${editor_command[0]} (définis VISUAL ou EDITOR)." >&2
         return 1
     fi
     "${editor_command[@]}" "$@"
@@ -336,6 +345,8 @@ edit() {
     # Original post timestamp
     edit_timestamp=$(LC_ALL=C date -r "$post_html" +"$date_format_full" )
     touch_timestamp=$(LC_ALL=C date -r "$post_html" +"$date_format_timestamp")
+    created_timestamp=$(sed -n "s/.*<!-- $date_created_inpost: #\([^#]*\)# -->.*/\1/p" "$post_html" | head -n 1)
+    [[ -n $created_timestamp ]] || created_timestamp=$(sed -n "s/.*<!-- $date_inpost: #\([^#]*\)# -->.*/\1/p" "$post_html" | head -n 1)
     tags_before=$(tags_in_post "$post_html")
     if [[ $2 == full ]]; then
         run_editor "$1" || return 1
@@ -506,6 +517,22 @@ is_boilerplate_file() {
     esac
 }
 
+# Sort by original creation time, then use the publication date for older posts.
+sort_posts_by_created() {
+    local post key
+    local -a keyed_posts=()
+    for post in "$@"; do
+        [[ -f $post ]] || continue
+        key=$(sed -n "s/.*<!-- $date_created_inpost: #\([^#]*\)# -->.*/\1/p" "$post" | head -n 1)
+        [[ -n $key ]] || key=$(sed -n "s/.*<!-- $date_inpost: #\([^#]*\)# -->.*/\1/p" "$post" | head -n 1)
+        [[ -n $key ]] || key=$(LC_ALL=C date -r "$post" +"$date_format_timestamp")
+        keyed_posts+=("$key$(printf '\t')$post")
+    done
+    if ((${#keyed_posts[@]})); then
+        printf '%s\n' "${keyed_posts[@]}" | LC_ALL=C sort -t $'\t' -k1,1r -k2,2r | cut -f2-
+    fi
+}
+
 # Adds all the bells and whistles to format the html page
 # Every blog post is marked with a <!-- entry begin --> and <!-- entry end -->
 # which is parsed afterwards in the other functions. There is also a marker
@@ -565,6 +592,8 @@ create_html_page() {
             else
                 echo "<!-- $date_inpost: #$(LC_ALL=$date_locale date +"$date_format_timestamp" --date="$timestamp")# -->"
             fi
+            [[ -n $created_timestamp ]] || created_timestamp=$(LC_ALL=C date +"$date_format_timestamp")
+            echo "<!-- $date_created_inpost: #$created_timestamp# -->"
             if [[ -z $timestamp ]]; then
                 echo -n "<div class=\"subtitle\">$(LC_ALL=$date_locale date +"$date_format")"
             else
@@ -667,6 +696,24 @@ parse_file() {
             echo "$line" >> "$content"
         fi
     done < "$1"
+
+    # Give posts without an explicit separator a useful front-page excerpt.
+    # Cutting after the first rendered paragraph keeps the boundary aligned
+    # with the article's structure and avoids splitting words or HTML tags.
+    if [[ -n $cut_do ]] && ! grep -Eq '<!--[[:space:]]*more[[:space:]]*-->|<hr ?/?>' "$content"; then
+        local excerpt_content
+        excerpt_content=$(mktemp ./.bb-post-excerpt.XXXXXX) || { rm -f -- "$content"; return 1; }
+        awk -v tags_header="$template_tags_line_header" -v legacy_header="$legacy_tags_line_header" '
+            !inserted && /<\/p>/ && $0 !~ "^<p>" tags_header && $0 !~ "^<p>" legacy_header {
+                print
+                print "<!-- more -->"
+                inserted=1
+                next
+            }
+            { print }
+        ' "$content" > "$excerpt_content" || { rm -f -- "$content" "$excerpt_content"; return 1; }
+        mv -f -- "$excerpt_content" "$content" || { rm -f -- "$content" "$excerpt_content"; return 1; }
+    fi
 
     # Create the actual html page
     create_html_page "$content" "$filename" no "$title" "$2" "$global_author"
@@ -819,7 +866,7 @@ all_posts() {
             # Date
             date=$(LC_ALL=$date_locale date -r "$i" +"$date_format")
             echo " $date</li>"
-        done < <(ls -t ./*.html)
+        done < <(sort_posts_by_created ./*.html)
         echo "" 1>&3
         echo "</ul>"
         echo "<div id=\"all_posts\"><a href=\"./$index_file\">$template_archive_index_page</a></div>"
@@ -889,7 +936,7 @@ rebuild_index() {
             fi
             echo -n "." 1>&3
             n=$(( n + 1 ))
-        done < <(ls -t ./*.html) # sort by date, newest first
+        done < <(sort_posts_by_created ./*.html) # newest post first
 
         feed=$blog_feed
         if [[ -n $global_feedburner ]]; then feed=$global_feedburner; fi
@@ -945,7 +992,7 @@ rebuild_tags() {
         for i in ./*.html; do [[ -f $i ]] && file_list+=("$i"); done
         if ((${#file_list[@]})); then
             local -a sorted_files=()
-            while IFS= read -r item; do sorted_files+=("$item"); done < <(ls -td "${file_list[@]}")
+            while IFS= read -r item; do sorted_files+=("$item"); done < <(sort_posts_by_created "${file_list[@]}")
             file_list=("${sorted_files[@]}")
         fi
         all_tags=yes
@@ -956,7 +1003,7 @@ rebuild_tags() {
         done < <(printf '%s\n' "$1" | sort -u)
         if ((${#file_list[@]})); then
             local -a sorted_files=()
-            while IFS= read -r item; do sorted_files+=("$item"); done < <(ls -td "${file_list[@]}")
+            while IFS= read -r item; do sorted_files+=("$item"); done < <(sort_posts_by_created "${file_list[@]}")
             file_list=("${sorted_files[@]}")
         fi
         tags=$2
@@ -1064,7 +1111,7 @@ list_posts() {
         line="$n # $(get_post_title "$i") # $(LC_ALL=$date_locale date -r "$i" +"$date_format")"
         lines+="$line"$'\n'
         n=$(( n + 1 ))
-    done < <(ls -t ./*.html)
+    done < <(sort_posts_by_created ./*.html)
 
     printf '%s' "$lines" | column -t -s "#"
 }
@@ -1099,7 +1146,7 @@ make_rss() {
             echo "<pubDate>$(LC_ALL=C date -r "$i" +"$date_format_full")</pubDate></item>"
     
             n=$(( n + 1 ))
-        done < <(ls -t ./*.html)
+        done < <(sort_posts_by_created ./*.html)
     
         echo '</channel></rss>'
     } 3>&1 >"$rssfile"
@@ -1121,8 +1168,7 @@ create_includes() {
         printf '<a href="oldposts/index.html">Anciens billets</a>\n'
         printf '<a href="%s">Rechercher</a>\n' "$search_file"
         printf '<a href="%s">Tags</a>\n' "$tags_index"
-        printf '<a href="https://passiongnulinux.tuxfamily.org/forum/">Forum</a>\n'
-        printf '<a href="https://discord.gg/z8HvuVsbX">Discord</a>\n'
+        printf '<a href="https://passiongnulinux.free.nf/forum/">Forum</a>\n'
         printf '<a href="%s">Liens</a>\n' "$links_file"
         echo '</nav>'
         printf '<a class="site-banner-link" href="%s/%s" aria-label="Accueil : %s"><img class="site-banner" src="%s" alt="" /></a>\n' \
@@ -1823,9 +1869,11 @@ rebuild_all_entries() {
         get_html_file_content 'text' 'text' <"$i" |
             sed "s|^<p>$legacy_tags_line_header|<p>$template_tags_line_header|" >> "$contentfile"
 
-        # Read timestamp from post, if present, and sync file timestamp
+        # Preserve publication and creation timestamps while rebuilding.
         timestamp=$(awk '/<!-- '$date_inpost': .+ -->/ { print }' "$i" | cut -d '#' -f 2)
         [[ -n $timestamp ]] && touch -t "$timestamp" "$i"
+        created_timestamp=$(awk '/<!-- '$date_created_inpost': .+ -->/ { print }' "$i" | cut -d '#' -f 2)
+        [[ -n $created_timestamp ]] || created_timestamp=$timestamp
         # Read timestamp from file in correct format for 'create_html_page'
         timestamp=$(LC_ALL=C date -r "$i" +"$date_format_full")
 
