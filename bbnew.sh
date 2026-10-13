@@ -417,13 +417,13 @@ edit() {
         fi
         [[ -n $backupfile ]] && rm -f -- "$backupfile"
     fi
-    touch -t "$touch_timestamp" "$filename"
+    touch -t "$touch_timestamp" "$filename" || return 1
     markdown_source=$1
     if [[ ! -e $markdown_source && ${1##*.} == md ]]; then
         markdown_source=${filename%.html}.md
     fi
-    [[ -e $markdown_source ]] && touch -t "$touch_timestamp" "$markdown_source"
-    chmod 644 "$filename"
+    [[ ! -e $markdown_source ]] || touch -t "$touch_timestamp" "$markdown_source" || return 1
+    chmod 644 "$filename" || return 1
     echo "Billet publié : $filename"
     tags_after=$(tags_in_post "$filename")
     relevant_tags=$(echo "$tags_before $tags_after" | tr ',' ' ' | tr ' ' '\n' | sort -u | tr '\n' ' ')
@@ -432,7 +432,7 @@ edit() {
         read -r -a relevant_tag_array <<< "$relevant_tags"
         relevant_posts=$(posts_with_tags "${relevant_tag_array[@]}")
         relevant_posts+=$'\n'"$filename"
-        rebuild_tags "$relevant_posts" "$relevant_tags"
+        rebuild_tags "$relevant_posts" "$relevant_tags" || return 1
     fi
 }
 
@@ -446,11 +446,15 @@ twitter_card() {
     echo "<meta name='twitter:card' content='summary' />"
     echo "<meta name='twitter:site' content='@$global_twitter_username' />"
     echo "<meta name='twitter:title' content='$2' />" # Twitter truncates at 70 char
-    description=$(grep -v -e "^<p>$template_tags_line_header" -e '^<p>Tags:' "$1" | sed -e 's/<[^>]*>//g' | tr '\n' ' ' | sed "s/\"/'/g" | head -c 250)
+    if ! description=$(set -o pipefail; awk -v tags_header="^<p>$template_tags_line_header" \
+        '$0 !~ tags_header && $0 !~ /^<p>Tags:/' "$1" | sed -e 's/<[^>]*>//g' | tr '\n' ' ' |
+        sed "s/\"/'/g" | awk '{ printf "%s", substr($0, 1, 250) }'); then
+        return 1
+    fi
     echo "<meta name='twitter:description' content=\"$description\" />"
 
     # For the image we try to locate the first image in the article
-    image=$(sed -n '2,$ d; s/.*<img.*src="\([^"]*\)".*/\1/p' "$1") 
+    image=$(sed -n '2,$ d; s/.*<img.*src="\([^"]*\)".*/\1/p' "$1") || return 1
 
     # If none, then we try a global setting image
     [[ -z $image ]] && [[ -n $global_twitter_card_image ]] && image=$global_twitter_card_image
@@ -501,6 +505,10 @@ twitter() {
 # or 1 (bash return value 'false') if it is a blogpost
 is_boilerplate_file() {
     name=${1#./}
+    # Pages created by the `page` command are static content, not blog posts.
+    if [[ -f $1 ]] && grep -Fq '<!-- bashblog_page -->' "$1"; then
+        return 0
+    fi
     # First check against user-defined non-blogpost pages
     for item in "${non_blogpost_files[@]}"; do
         [[ "$name" == "$item" ]] && return 0
@@ -529,7 +537,7 @@ sort_posts_by_created() {
         keyed_posts+=("$key$(printf '\t')$post")
     done
     if ((${#keyed_posts[@]})); then
-        printf '%s\n' "${keyed_posts[@]}" | LC_ALL=C sort -t $'\t' -k1,1r -k2,2r | cut -f2-
+        (set -o pipefail; printf '%s\n' "${keyed_posts[@]}" | LC_ALL=C sort -t $'\t' -k1,1r -k2,2r | cut -f2-)
     fi
 }
 
@@ -559,20 +567,22 @@ create_html_page() {
     # Create the actual blog post
     # html, head
     {
-        cat ".header.html"
+        cat ".header.html" || { rm -f -- "$temp_output"; return 1; }
         echo "<title>$title</title>"
-        google_analytics
-        twitter_card "$content" "$title"
+        google_analytics || { rm -f -- "$temp_output"; return 1; }
+        twitter_card "$content" "$title" || { rm -f -- "$temp_output"; return 1; }
         echo "</head><body>"
         # stuff to add before the actual body content
-        [[ -n $body_begin_file ]] && cat "$body_begin_file"
-        [[ $output_target == "$index_file" ]] && [[ -n $body_begin_file_index ]] && cat "$body_begin_file_index"
+        [[ -z $body_begin_file ]] || cat "$body_begin_file" || { rm -f -- "$temp_output"; return 1; }
+        if [[ $output_target == "$index_file" && -n $body_begin_file_index ]]; then
+            cat "$body_begin_file_index" || { rm -f -- "$temp_output"; return 1; }
+        fi
         # body divs
         echo '<div id="divbodyholder">'
         echo '<div class="headerholder"><div class="header">'
         # blog title
         echo '<div id="title">'
-        cat .title.html
+        cat .title.html || { rm -f -- "$temp_output"; return 1; }
         echo '</div></div></div>' # title, header, headerholder
         echo '<div id="divbody"><div class="content">'
 
@@ -603,32 +613,32 @@ create_html_page() {
             echo "</div>"
             echo '<!-- text begin -->' # This marks the text body, after the title, date...
         fi
-        cat "$content" # Actual content
+        cat "$content" || { rm -f -- "$temp_output"; return 1; } # Actual content
         if [[ $index == no ]]; then
             printf '\n<!-- text end -->\n'
 
-            twitter "$global_url/$file_url"
+            twitter "$global_url/$file_url" || { rm -f -- "$temp_output"; return 1; }
 
             echo '<!-- entry end -->' # absolute end of the post
         fi
 
         if [[ $index == no && -n $comments_file && -f $comments_file ]]; then
             echo '<section id="comments" aria-label="Commentaires">'
-            cat "$comments_file"
+            cat "$comments_file" || { rm -f -- "$temp_output"; return 1; }
             echo '</section>'
         fi
 
         echo '</div>' # content
 
         # Add disqus commments except for index and all_posts pages
-        [[ $index == no ]] && disqus_body
+        [[ $index != no ]] || disqus_body || { rm -f -- "$temp_output"; return 1; }
 
         # page footer
-        cat .footer.html
+        cat .footer.html || { rm -f -- "$temp_output"; return 1; }
         # close divs
         echo '</div></div>' # divbody and divbodyholder 
-        disqus_footer
-        [[ -n $body_end_file ]] && cat "$body_end_file"
+        disqus_footer || { rm -f -- "$temp_output"; return 1; }
+        [[ -z $body_end_file ]] || cat "$body_end_file" || { rm -f -- "$temp_output"; return 1; }
         echo '</body></html>'
     } > "$temp_output" || { rm -f -- "$temp_output"; return 1; }
     if ! mv -f -- "$temp_output" "$filename"; then
@@ -824,11 +834,11 @@ EOF
     done
 
     if [[ $fmt == md && -n $save_markdown ]]; then
-        mv -f -- "$TMPFILE" "${filename%.html}.md"
+        mv -f -- "$TMPFILE" "${filename%.html}.md" || return 1
     else
-        rm -f -- "$TMPFILE"
+        rm -f -- "$TMPFILE" || return 1
     fi
-    chmod 644 "$filename"
+    chmod 644 "$filename" || return 1
     echo "Billet publié : $filename"
     relevant_tags=$(tags_in_post "$filename")
     if [[ -n $relevant_tags ]]; then
@@ -836,8 +846,165 @@ EOF
         read -r -a relevant_tag_array <<< "$relevant_tags"
         relevant_posts=$(posts_with_tags "${relevant_tag_array[@]}")
         relevant_posts+=$'\n'"$filename"
-        rebuild_tags "$relevant_posts" "$relevant_tags"
+        rebuild_tags "$relevant_posts" "$relevant_tags" || return 1
     fi
+}
+
+# Create or update a static page from a Markdown or HTML draft.
+# The first line is the page title; the remaining lines are its content.
+write_page() {
+    local source=${1:-} source_is_temporary=0 title page_slug target markdown_target
+    local body_source rendered content_file source_format preview_file page_status preview_url draft
+
+    if [[ -z $source ]]; then
+        source=$(mktemp ./.bb-page-draft.XXXXXX) || return 1
+        source_is_temporary=1
+        if test_markdown; then
+            source_format=md
+            printf 'Titre de la page\n\nÉcris le contenu de la page ici.\n' > "$source" || {
+                rm -f -- "$source"
+                return 1
+            }
+        else
+            source_format=html
+            printf 'Titre de la page\n\n<p>Écris le contenu HTML de la page ici.</p>\n' > "$source" || {
+                rm -f -- "$source"
+                return 1
+            }
+        fi
+        chmod 600 "$source" || { rm -f -- "$source"; return 1; }
+    else
+        if [[ ! -f $source ]]; then
+            echo "Le fichier source « $source » n’existe pas." >&2
+            return 1
+        fi
+        case ${source##*.} in
+            md)
+                source_format=md
+                if ! test_markdown; then
+                    echo "Markdown ne fonctionne pas ; crée une page avec « page » et saisis le contenu en HTML." >&2
+                    return 1
+                fi
+                ;;
+            html)
+                if [[ $source != drafts/* ]]; then
+                    echo "Un brouillon HTML doit se trouver dans le dossier « drafts/ »." >&2
+                    return 1
+                fi
+                source_format=html
+                ;;
+            *)
+                echo "La commande page attend un fichier .md ou un brouillon HTML dans « drafts/ »." >&2
+                return 1
+                ;;
+        esac
+    fi
+
+    page_status="E"
+    while [[ $page_status != p && $page_status != P ]]; do
+        run_editor "$source" || {
+            echo "L’éditeur a échoué ; le brouillon est conservé dans « $source »." >&2
+            return 1
+        }
+        IFS= read -r title < "$source" || :
+        if [[ -z ${title//[[:space:]]/} ]]; then
+            echo "La première ligne doit contenir le titre de la page." >&2
+            return 1
+        fi
+        page_slug=$title
+        if [[ -n $convert_filename ]]; then
+            page_slug=$(printf '%s\n' "$title" | eval "$convert_filename") || return 1
+        fi
+        if [[ -z $page_slug || $page_slug == */* || $page_slug == . || $page_slug == .. ]]; then
+            echo "Le titre produit un nom de page invalide : « $page_slug »." >&2
+            return 1
+        fi
+        target=$page_slug.html
+        if [[ -e $target ]] && ! grep -Fq '<!-- bashblog_page -->' "$target"; then
+            echo "Le fichier « $target » existe et n’est pas une page créée par cette commande." >&2
+            return 1
+        fi
+
+        markdown_target=$page_slug.md
+        if [[ $source_format == md && -n $save_markdown && $page_status == p &&
+              -e $markdown_target && $source != "$markdown_target" ]]; then
+            echo "Le fichier Markdown « $markdown_target » existe déjà ; le brouillon n’a pas été déplacé." >&2
+            return 1
+        fi
+
+        body_source=$(mktemp ./.bb-page-body.XXXXXX) || return 1
+        rendered=""
+        content_file=$(mktemp ./.bb-page-content.XXXXXX) || { rm -f -- "$body_source"; return 1; }
+        if ! tail -n +2 "$source" > "$body_source"; then
+            rm -f -- "$body_source" "$content_file"
+            return 1
+        fi
+        if [[ $source_format == md ]]; then
+            rendered=$(markdown "$body_source") || {
+                rm -f -- "$body_source" "$content_file"
+                return 1
+            }
+            if ! { printf '<!-- bashblog_page -->\n'; cat -- "$rendered"; } > "$content_file"; then
+                rm -f -- "$body_source" "$content_file" "$rendered"
+                return 1
+            fi
+            rm -f -- "$rendered" || { rm -f -- "$body_source" "$content_file"; return 1; }
+        else
+            if ! { printf '<!-- bashblog_page -->\n'; cat -- "$body_source"; } > "$content_file"; then
+                rm -f -- "$body_source" "$content_file"
+                return 1
+            fi
+        fi
+        rm -f -- "$body_source" || { rm -f -- "$content_file"; return 1; }
+
+        preview_file=$(mktemp "./page-preview-${page_slug}.XXXXXX.html") || { rm -f -- "$content_file"; return 1; }
+        if ! create_html_page "$content_file" "$preview_file" yes "$title" || ! chmod 644 "$preview_file"; then
+            rm -f -- "$content_file" "$preview_file"
+            return 1
+        fi
+        rm -f -- "$content_file" || { rm -f -- "$preview_file"; return 1; }
+        [[ -n $preview_url ]] || preview_url=$global_url
+        echo "Aperçu de la page : ouvre $preview_url/${preview_file#./} dans ton navigateur."
+        echo -n "[P]ublier, [M]odifier encore, [B]rouillon ? (p/m/b) "
+        read -r page_status || { rm -f -- "$preview_file"; return 1; }
+
+        case $page_status in
+            p|P)
+                mv -f -- "$preview_file" "$target" || { rm -f -- "$preview_file"; return 1; }
+                chmod 644 "$target" || return 1
+                if [[ $source_format == md && -n $save_markdown && $source != "$markdown_target" ]]; then
+                    mv -f -- "$source" "$markdown_target" || return 1
+                    source_is_temporary=0
+                elif [[ $source_format == html && $source != .bb-page-draft.* ]]; then
+                    rm -f -- "$source" || return 1
+                fi
+                if ((source_is_temporary)); then rm -f -- "$source" || return 1; fi
+                echo "Page publiée : $target"
+                return 0
+                ;;
+            b|B)
+                mkdir -p drafts || { rm -f -- "$preview_file"; return 1; }
+                chmod 700 drafts || { rm -f -- "$preview_file"; return 1; }
+                draft=drafts/$page_slug.$source_format
+                if [[ $source != "$draft" ]]; then
+                    while [[ -e $draft ]]; do draft="drafts/$page_slug.$RANDOM.$source_format"; done
+                    mv -n -- "$source" "$draft" || { rm -f -- "$preview_file"; return 1; }
+                    if [[ -e $source ]]; then
+                        echo "Impossible d’enregistrer le brouillon sans écraser un fichier existant." >&2
+                        rm -f -- "$preview_file"
+                        return 1
+                    fi
+                fi
+                chmod 600 "$draft" || { rm -f -- "$preview_file"; return 1; }
+                rm -f -- "$preview_file" || return 1
+                echo "Brouillon enregistré dans « $draft »."
+                return 3
+                ;;
+            *)
+                rm -f -- "$preview_file" || return 1
+                ;;
+        esac
+    done
 }
 
 # Create an index page with all the posts
@@ -876,9 +1043,9 @@ all_posts() {
         rm -f -- "$contentfile" "$outputfile"
         return 1
     }
-    mv -f -- "$outputfile" "$archive_index"
-    chmod 644 "$archive_index"
-    rm -f -- "$contentfile"
+    mv -f -- "$outputfile" "$archive_index" || { rm -f -- "$contentfile" "$outputfile"; return 1; }
+    chmod 644 "$archive_index" || { rm -f -- "$contentfile"; return 1; }
+    rm -f -- "$contentfile" || return 1
 }
 
 # Create an index page with all the tags
@@ -912,9 +1079,9 @@ all_tags() {
         rm -f -- "$contentfile" "$outputfile"
         return 1
     }
-    mv -f -- "$outputfile" "$tags_index"
-    chmod 644 "$tags_index"
-    rm -f -- "$contentfile"
+    mv -f -- "$outputfile" "$tags_index" || { rm -f -- "$contentfile" "$outputfile"; return 1; }
+    chmod 644 "$tags_index" || { rm -f -- "$contentfile"; return 1; }
+    rm -f -- "$contentfile" || return 1
 }
 
 # Generate the index.html with the content of the latest posts
@@ -930,9 +1097,18 @@ rebuild_index() {
             is_boilerplate_file "$i" && continue;
             if ((n >= number_of_index_articles)); then break; fi
             if [[ -n $cut_do ]]; then
-                get_html_file_content 'entry' 'entry' 'cut' <"$i" | awk "/$cut_line/ { print \"<p class=\\\"readmore\\\"><a href=\\\"$i\\\">$template_read_more</a></p>\" ; next } 1"
+                if ! (set -o pipefail; get_html_file_content 'entry' 'entry' 'cut' <"$i" |
+                    awk -v cut_line="${cut_line//\\\//\/}" -v filename="$i" -v read_more="$template_read_more" \
+                        '$0 ~ cut_line { print "<p class=\"readmore\"><a href=\"" filename "\">" read_more "</a></p>"; next } 1'); then
+                    echo "Échec de la lecture du billet « $i » pendant la reconstruction de l’accueil." >&2
+                    rm -f -- "$contentfile" "$newindexfile"
+                    return 1
+                fi
             else
-                get_html_file_content 'entry' 'entry' <"$i"
+                get_html_file_content 'entry' 'entry' <"$i" || {
+                    rm -f -- "$contentfile" "$newindexfile"
+                    return 1
+                }
             fi
             echo -n "." 1>&3
             n=$(( n + 1 ))
@@ -950,18 +1126,18 @@ rebuild_index() {
         return 1
     }
     rm -f -- "$contentfile"
-    mv -f -- "$newindexfile" "$index_file"
-    chmod 644 "$index_file"
+    mv -f -- "$newindexfile" "$index_file" || { rm -f -- "$newindexfile"; return 1; }
+    chmod 644 "$index_file" || return 1
 }
 
 # Finds all tags referenced in one post.
 # Accepts either filename as first argument, or post content at stdin
 # Prints one line with space-separated tags to stdout
 tags_in_post() {
-    sed -n \
+    (set -o pipefail; sed -n \
         -e "/^<p>$template_tags_line_header/{s/^<p>$template_tags_line_header//;s/<[^>]*>//g;s/[ ,]\+/ /g;p;}" \
         -e "/^<p>$legacy_tags_line_header/{s/^<p>$legacy_tags_line_header//;s/<[^>]*>//g;s/[ ,]\+/ /g;p;}" "$1" |
-        tr ', ' ' '
+        tr ', ' ' ')
 }
 
 # Finds all posts referenced in a number of tags.
@@ -985,72 +1161,155 @@ posts_with_tags() {
 # mind the quotes!
 rebuild_tags() {
     local -a file_list=()
-    local all_tags=""
-    local tags=""
+    local -a affected_tags=() old_tag_files=() installed_tag_files=() staged_tag_files=()
+    local all_tags="" tags="" stage_dir post_content post_path post_tags tag tagname old_file staged_file sorted_posts
+    local rollback_failed=0
     if (($# < 2)); then
         # Keep paths in an array so spaces survive sorting and processing.
         for i in ./*.html; do [[ -f $i ]] && file_list+=("$i"); done
         if ((${#file_list[@]})); then
             local -a sorted_files=()
-            while IFS= read -r item; do sorted_files+=("$item"); done < <(sort_posts_by_created "${file_list[@]}")
+            sorted_posts=$(sort_posts_by_created "${file_list[@]}") || return 1
+            while IFS= read -r post_path; do sorted_files+=("$post_path"); done <<< "$sorted_posts"
             file_list=("${sorted_files[@]}")
         fi
         all_tags=yes
     else
         # The internal API passes a newline-separated list of file paths.
-        while IFS= read -r item; do
-            [[ -n $item && -f $item ]] && file_list+=("$item")
-        done < <(printf '%s\n' "$1" | sort -u)
+        sorted_posts=$(printf '%s\n' "$1" | sort -u) || return 1
+        while IFS= read -r post_path; do
+            [[ -n $post_path && -f $post_path ]] && file_list+=("$post_path")
+        done <<< "$sorted_posts"
         if ((${#file_list[@]})); then
             local -a sorted_files=()
-            while IFS= read -r item; do sorted_files+=("$item"); done < <(sort_posts_by_created "${file_list[@]}")
+            sorted_posts=$(sort_posts_by_created "${file_list[@]}") || return 1
+            while IFS= read -r post_path; do sorted_files+=("$post_path"); done <<< "$sorted_posts"
             file_list=("${sorted_files[@]}")
         fi
         tags=$2
     fi
     echo -n "Reconstruction des pages d’étiquettes "
-    n=0
     if [[ -n $all_tags ]]; then
-        rm -f -- "./$prefix_tags"*.html 2>/dev/null
+        for post_path in "${file_list[@]}"; do
+            is_boilerplate_file "$post_path" && continue
+            post_tags=$(tags_in_post "$post_path") || return 1
+            for tag in $post_tags; do
+                [[ $tag =~ ^[[:alnum:]_-]+$ ]] || continue
+                [[ " ${affected_tags[*]} " == *" $tag "* ]] || affected_tags+=("$tag")
+            done
+        done
+        for post_path in "./$prefix_tags"*.html; do
+            [[ -f $post_path ]] && old_tag_files+=("$post_path")
+        done
     else
-        for i in $tags; do
-            [[ $i =~ ^[[:alnum:]_-]+$ ]] || continue
-            rm -f -- "./$prefix_tags$i.html" 2>/dev/null
+        for tag in $tags; do
+            [[ $tag =~ ^[[:alnum:]_-]+$ ]] || continue
+            [[ " ${affected_tags[*]} " == *" $tag "* ]] || affected_tags+=("$tag")
+            [[ -f ./$prefix_tags$tag.html ]] && old_tag_files+=("./$prefix_tags$tag.html")
         done
     fi
-    rm -f -- "./$prefix_tags"*.tmp.html 2>/dev/null
-    # First we will process all files and create temporal tag files
-    # with just the content of the posts
-    tmpfile=$(mktemp ./.bb-tags-content.XXXXXX) || return 1
-    for i in "${file_list[@]}"; do
-        is_boilerplate_file "$i" && continue;
+
+    # Render every replacement in a private staging directory before moving
+    # any current tag page out of the way.
+    stage_dir=$(mktemp -d ./.bb-tags.XXXXXX) || return 1
+    post_content=$stage_dir/post-content
+    if ! : >"$post_content"; then
+        rm -rf -- "$stage_dir"
+        return 1
+    fi
+    for tag in "${affected_tags[@]}"; do
+        if ! : >"$stage_dir/$prefix_tags$tag.content"; then
+            rm -rf -- "$stage_dir"
+            return 1
+        fi
+    done
+
+    for post_path in "${file_list[@]}"; do
+        is_boilerplate_file "$post_path" && continue
         echo -n "."
         if [[ -n $cut_do ]]; then
-            get_html_file_content 'entry' 'entry' 'cut' <"$i" | awk "/$cut_line/ { print \"<p class=\\\"readmore\\\"><a href=\\\"$i\\\">$template_read_more</a></p>\" ; next } 1"
-        else
-            get_html_file_content 'entry' 'entry' <"$i"
-        fi >"$tmpfile"
-        for tag in $(tags_in_post "$i"); do
+            if ! (set -o pipefail; get_html_file_content 'entry' 'entry' 'cut' <"$post_path" |
+                awk -v cut_line="${cut_line//\\\//\/}" -v filename="$post_path" -v read_more="$template_read_more" \
+                    '$0 ~ cut_line { print "<p class=\"readmore\"><a href=\"" filename "\">" read_more "</a></p>"; next } 1') >"$post_content"; then
+                echo "Échec de la lecture du billet « $post_path » pendant la reconstruction des étiquettes." >&2
+                rm -rf -- "$stage_dir"
+                return 1
+            fi
+        elif ! get_html_file_content 'entry' 'entry' <"$post_path" >"$post_content"; then
+            echo "Échec de la lecture du billet « $post_path » pendant la reconstruction des étiquettes." >&2
+            rm -rf -- "$stage_dir"
+            return 1
+        fi
+        post_tags=$(tags_in_post "$post_path") || {
+            echo "Échec de la lecture des étiquettes du billet « $post_path »." >&2
+            rm -rf -- "$stage_dir"
+            return 1
+        }
+        for tag in $post_tags; do
             if [[ ! $tag =~ ^[[:alnum:]_-]+$ ]]; then
-                echo "Étiquette risquée « $tag » ignorée dans « $i »." >&2
+                echo "Étiquette risquée « $tag » ignorée dans « $post_path »." >&2
                 continue
             fi
             if [[ -n $all_tags || " $tags " == *" $tag "* ]]; then
-                cat "$tmpfile" >> "$prefix_tags$tag".tmp.html
+                cat -- "$post_content" >>"$stage_dir/$prefix_tags$tag.content" || {
+                    echo "Échec de l’écriture du contenu de l’étiquette « $tag »." >&2
+                    rm -rf -- "$stage_dir"
+                    return 1
+                }
             fi
         done
     done
-    rm -f -- "$tmpfile"
-    # Now generate the tag files with headers, footers, etc
-    while IFS='' read -r i; do
-        tagname=${i#./"$prefix_tags"}
-        tagname=${tagname%.tmp.html}
-        create_html_page "$i" "$prefix_tags$tagname.html" yes "$global_title &mdash; $template_tag_title \"$tagname\"" "$global_author" || {
-            rm -f -- "$tmpfile" "$i"
+
+    for tag in "${affected_tags[@]}"; do
+        [[ -s $stage_dir/$prefix_tags$tag.content ]] || continue
+        staged_file=$stage_dir/$prefix_tags$tag.html
+        create_html_page "$stage_dir/$prefix_tags$tag.content" "$staged_file" yes \
+            "$global_title &mdash; $template_tag_title \"$tag\"" "$global_author" || {
+                echo "Échec de la génération de la page d’étiquette « $tag » ; les pages existantes sont préservées." >&2
+                rm -rf -- "$stage_dir"
+                return 1
+            }
+        chmod 644 "$staged_file" || { rm -rf -- "$stage_dir"; return 1; }
+        staged_tag_files+=("$staged_file")
+    done
+
+    mkdir "$stage_dir/old" || { rm -rf -- "$stage_dir"; return 1; }
+    for old_file in "${old_tag_files[@]}"; do
+        if ! mv -- "$old_file" "$stage_dir/old/${old_file##*/}"; then
+            rollback_failed=0
+            for item in "${old_tag_files[@]}"; do
+                [[ -f $stage_dir/old/${item##*/} ]] || continue
+                mv -- "$stage_dir/old/${item##*/}" "$item" || rollback_failed=1
+            done
+            if ((rollback_failed)); then
+                echo "Échec du déplacement d’une ancienne page d’étiquette ; les sauvegardes temporaires sont dans « $stage_dir »." >&2
+                return 1
+            fi
+            rm -rf -- "$stage_dir"
             return 1
-        }
-        rm -f -- "$i"
-    done < <(ls -t ./"$prefix_tags"*.tmp.html 2>/dev/null)
+        fi
+    done
+
+    for staged_file in "${staged_tag_files[@]}"; do
+        post_path=./${staged_file##*/}
+        if ! mv -- "$staged_file" "$post_path"; then
+            rollback_failed=0
+            for tagname in "${installed_tag_files[@]}"; do rm -f -- "$tagname" || rollback_failed=1; done
+            for old_file in "${old_tag_files[@]}"; do
+                [[ -f $stage_dir/old/${old_file##*/} ]] || continue
+                mv -- "$stage_dir/old/${old_file##*/}" "$old_file" || rollback_failed=1
+            done
+            if ((rollback_failed)); then
+                echo "Échec de la publication des pages d’étiquette et de leur restauration ; les fichiers de secours sont dans « $stage_dir »." >&2
+                return 1
+            fi
+            rm -rf -- "$stage_dir"
+            return 1
+        fi
+        installed_tag_files+=("$post_path")
+    done
+
+    rm -rf -- "$stage_dir" || { echo "Pages reconstruites, mais impossible de nettoyer « $stage_dir »." >&2; return 1; }
     echo
 }
 
@@ -1152,8 +1411,8 @@ make_rss() {
     } 3>&1 >"$rssfile"
     echo ""
 
-    mv -f -- "$rssfile" "$blog_feed"
-    chmod 644 "$blog_feed"
+    mv -f -- "$rssfile" "$blog_feed" || { rm -f -- "$rssfile"; return 1; }
+    chmod 644 "$blog_feed" || return 1
 }
 
 # generate headers, footers, etc
@@ -1173,9 +1432,9 @@ create_includes() {
         echo '</nav>'
         printf '<a class="site-banner-link" href="%s/%s" aria-label="Accueil : %s"><img class="site-banner" src="%s" alt="" /></a>\n' \
             "$global_url" "$index_file" "$global_title" "$global_banner_image"
-    } > ".title.html"
+    } > ".title.html" || return 1
 
-    if [[ -f $header_file ]]; then cp "$header_file" .header.html
+    if [[ -f $header_file ]]; then cp -- "$header_file" .header.html || return 1
     else {
         echo '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">'
         echo "<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"$global_language\" xml:lang=\"$global_language\"><head>"
@@ -1187,7 +1446,7 @@ create_includes() {
         else 
             echo "<link rel=\"alternate\" type=\"application/rss+xml\" title=\"$template_subscribe_browser_button\" href=\"$global_feedburner\" />"
         fi
-        } > ".header.html"
+        } > ".header.html" || return 1
     fi
 
     if [[ -n $footer_file ]]; then
@@ -1196,13 +1455,13 @@ create_includes() {
             rm -f -- ".title.html" ".header.html"
             return 1
         fi
-        cp "$footer_file" .footer.html || return 1
+        cp -- "$footer_file" .footer.html || return 1
     else {
         protected_mail=${global_email//@/&#64;}
         protected_mail=${protected_mail//./&#46;}
         echo "<div id=\"footer\">$global_license <a href=\"$global_author_url\">$global_author</a> &mdash; <a href=\"mailto:$protected_mail\">$protected_mail</a><br/>"
         echo 'Généré avec <a href="https://github.com/cfenollosa/bashblog">BashBlog</a>, un outil de blog statique écrit en Bash.</div>'
-        } >> ".footer.html"
+        } >> ".footer.html" || return 1
     fi
 }
 
@@ -1866,8 +2125,12 @@ rebuild_all_entries() {
         # Get the title and entry, and rebuild the html structure from scratch (divs, title, description...)
         title=$(get_post_title "$i")
 
-        get_html_file_content 'text' 'text' <"$i" |
-            sed "s|^<p>$legacy_tags_line_header|<p>$template_tags_line_header|" >> "$contentfile"
+        if ! (set -o pipefail; get_html_file_content 'text' 'text' <"$i" |
+            sed "s|^<p>$legacy_tags_line_header|<p>$template_tags_line_header|") >> "$contentfile"; then
+            echo "Échec de la lecture du billet « $i » pendant sa reconstruction." >&2
+            rm -f -- "$contentfile"
+            return 1
+        fi
 
         # Preserve publication and creation timestamps while rebuilding.
         timestamp=$(awk '/<!-- '$date_inpost': .+ -->/ { print }' "$i" | cut -d '#' -f 2)
@@ -1883,10 +2146,12 @@ rebuild_all_entries() {
         }
         # keep the original timestamp!
         timestamp=$(LC_ALL=C date -r "$i" +"$date_format_timestamp")
-        mv -f -- "$i.rebuilt" "$i"
-        chmod 644 "$i"
-        touch -t "$timestamp" "$i"
-        rm -f -- "$contentfile"
+        if ! mv -f -- "$i.rebuilt" "$i" || ! chmod 644 "$i" || ! touch -t "$timestamp" "$i"; then
+            echo "Impossible de remplacer correctement le billet « $i » ; le fichier reconstruit est conservé sous « $i.rebuilt » si le déplacement a échoué." >&2
+            rm -f -- "$contentfile"
+            return 1
+        fi
+        rm -f -- "$contentfile" || return 1
     done
     echo ""
 }
@@ -1900,6 +2165,8 @@ usage() {
     echo "    post [-html] [fichier] crée un billet ou ouvre un brouillon existant"
     echo "                            Markdown est utilisé si un convertisseur compatible est disponible, sinon HTML."
     echo "                            '-html' force l’édition en HTML."
+    echo "    page [fichier.md|drafts/fichier.html] crée une page puis propose de publier ou garder un brouillon"
+    echo "                            sans fichier, ouvre l’éditeur en Markdown si disponible, sinon en HTML."
     echo "    edit [-n|-f] [fichier] modifie un billet publié en préservant ses données"
     echo "                            '-n' autorise un nouveau nom si le titre change"
     echo "                            '-f' ouvre le fichier HTML complet et conserve son nom"
@@ -1915,9 +2182,17 @@ usage() {
 # Delete all generated content, leaving only this script
 reset() {
     echo "Confirme la suppression de tous les billets en écrivant exactement « Oui, je confirme ! » : "
-    read -r line
+    read -r line || { echo "Lecture de la confirmation impossible ; aucune suppression effectuée." >&2; return 1; }
     if [[ $line == "Oui, je confirme !" ]]; then
-        rm .*.html ./*.html ./*.css ./*.rss &> /dev/null
+        local -a generated_files=()
+        local candidate
+        for candidate in .*.html ./*.html ./*.css ./*.rss; do
+            [[ -e $candidate ]] && generated_files+=("$candidate")
+        done
+        if ((${#generated_files[@]})) && ! rm -f -- "${generated_files[@]}"; then
+            echo "Échec de la suppression de certains fichiers générés." >&2
+            return 1
+        fi
         echo
         echo "Billets, feuilles de style et flux supprimés."
         echo "La sauvegarde '.backup.tar.gz' a été conservée."
@@ -1959,6 +2234,8 @@ date_version_detect() {
 # $1     command to run
 # $2     file name of a draft to continue editing (optional)
 do_main() {
+    local -a html_files=()
+    local file backup_tmp yesterday_tmp page_result
     # Detect if using BSD date or GNU date
     date_version_detect
     # Load default configuration, then override settings with the config file
@@ -1975,7 +2252,7 @@ do_main() {
     global_variables_check || exit 1
 
     # Check for validity of argument
-    [[ $1 != "reset" && $1 != "post" && $1 != "rebuild" && $1 != "list" && $1 != "edit" && $1 != "delete" && $1 != "tags" ]] && 
+    [[ $1 != "reset" && $1 != "post" && $1 != "page" && $1 != "rebuild" && $1 != "list" && $1 != "edit" && $1 != "delete" && $1 != "tags" ]] && 
         usage && exit 2
 
     [[ $1 == list ]] &&
@@ -1984,6 +2261,11 @@ do_main() {
     [[ $1 == tags ]] &&
         list_tags "$@" && exit
 
+    if [[ $1 == page ]] && (($# > 2)); then
+        echo "Utilisation : page [fichier.md]" >&2
+        exit 2
+    fi
+
     if [[ $1 == edit ]]; then
         if (($# < 2)) || [[ ! -f ${!#} ]]; then
             echo "Indique un fichier .md ou .html valide à modifier." >&2
@@ -1991,27 +2273,63 @@ do_main() {
         fi
     fi
 
-    # Test for existing html files
-    if ls ./*.html &> /dev/null; then
-        # We're going to back up just in case
-        tar -c -z -f ".backup.tar.gz" -- *.html &&
-            chmod 600 ".backup.tar.gz"
+    # Gather HTML files without relying on `ls` or an unexpanded wildcard.
+    for file in ./*.html; do
+        [[ -f $file ]] && html_files+=("${file#./}")
+    done
+    if ((${#html_files[@]})); then
+        # Build the archive beside its destination and replace it only after
+        # tar has completed successfully, preserving the previous backup.
+        backup_tmp=$(mktemp ./.backup.tar.gz.XXXXXX) || {
+            echo "Impossible de créer le fichier temporaire de sauvegarde." >&2
+            exit 1
+        }
+        if ! tar -c -z -f "$backup_tmp" -- "${html_files[@]}" ||
+            ! chmod 600 "$backup_tmp" || ! mv -f -- "$backup_tmp" .backup.tar.gz; then
+            rm -f -- "$backup_tmp"
+            echo "Échec de la sauvegarde des fichiers HTML ; aucune commande n’a été exécutée." >&2
+            exit 1
+        fi
     elif [[ $1 == rebuild ]]; then
         echo "Aucun fichier HTML trouvé ; rien à reconstruire."
         exit
     fi
 
     # Keep first backup of this day containing yesterday's version of the blog
-    [[ ! -f .yesterday.tar.gz || $(date -r .yesterday.tar.gz +'%d') != "$(date +'%d')" ]] &&
-        cp .backup.tar.gz .yesterday.tar.gz &> /dev/null
+    if [[ -f .backup.tar.gz ]] &&
+        { [[ ! -f .yesterday.tar.gz ]] || [[ $(date -r .yesterday.tar.gz +'%d') != "$(date +'%d')" ]]; }; then
+        yesterday_tmp=$(mktemp ./.yesterday.tar.gz.XXXXXX) || {
+            echo "Impossible de préparer la sauvegarde journalière." >&2
+            exit 1
+        }
+        if ! cp -- .backup.tar.gz "$yesterday_tmp" || ! chmod 600 "$yesterday_tmp" ||
+            ! mv -f -- "$yesterday_tmp" .yesterday.tar.gz; then
+            rm -f -- "$yesterday_tmp"
+            echo "Échec de la mise à jour de la sauvegarde journalière." >&2
+            exit 1
+        fi
+    fi
 
-    [[ $1 == reset ]] &&
-        reset && exit
+    if [[ $1 == reset ]]; then
+        reset
+        exit $?
+    fi
 
     create_css || exit 1
     create_includes || exit 1
     if [[ $1 == post ]]; then
         write_entry "$@" || { delete_includes; exit 1; }
+    fi
+    if [[ $1 == page ]]; then
+        write_page "${2:-}"
+        page_result=$?
+        if ((page_result == 3)); then
+            delete_includes
+            exit 0
+        elif ((page_result != 0)); then
+            delete_includes
+            exit 1
+        fi
     fi
     if [[ $1 == rebuild ]]; then
         if ! rebuild_all_entries || ! rebuild_tags; then
